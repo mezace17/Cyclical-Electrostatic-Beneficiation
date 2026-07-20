@@ -1,0 +1,174 @@
+%/ Parametric model of electrostatic beneficiation setup
+% Program written by Cesar Meza, 2023
+% Credit for approach given to Michael Fabien Franke, 2022
+% /%
+clear all; %#ok<CLALL> 
+%% Physical constants
+r_grain = (98*10^-6)/2;         % Median grain radius (m)
+phi_s = 4.28;                   % Work function of Al tribocharger (eV)
+g = 9.8;                        % Acceleration due to gravity (m/s^2)
+%/ Soil composition matrix: 
+% Data taken from Exolith Fact Sheet - batch 003-01-001-0523
+% Note that grain radius is currently assumed to be constant, which
+% may be possible with size screening. This assumption may need to be 
+% updated in the future.
+% Columns:
+% C1 = phi_p, C2 = rho_p
+% where phi_p = material work function (eV), rho_p = material density
+% (kg/m^3) 
+% Rows:
+% R1 = Ilmenite, R2 = Pyroxene, R3 = Olivine 
+% Anorthosite and Basalt ignored due to lack of information, will wait
+% for empirical data in order to ammend design
+% F
+% Density data taken from:
+% Ilmenite - https://www.mindat.org/min-2013.html
+% Pyroxene - https://www.engineeringtoolbox.com/mineral-density-d_1555.html
+% Olivine - https://webmineral.com/data/Olivine.shtml
+% /%
+mat = [4.29 ((4.68+4.76)/2)*1000
+       5.14 ((3.52+2.67+3.4+3.2+3.95+3.3)/6)*1000
+       7.9  3.32 * 1000]; 
+%% System variables
+%/ Defaults
+% v_app = 20;             % Voltage applied to plates (kV)
+% plate_d = .025;         % Distance between plates (m)
+% plate_l = 0.3;          % Plate length (m)
+% fall_l = 0.05;          % Length from plate to bin (m)
+% opening = 0.0001;       % Radius of opening to separator (m)
+ 
+v_app = 30;              % Voltage applied to plates (kV)
+plate_d = 0.0508;        % Distance between plates (m)
+plate_l = 0.3048;        % Plate length (m)
+fall_l = 0.05;           % Length from plate to bin (m)
+opening = 0.005;         % Radius of opening to separator (m)
+%/ The smaller the opening, the less the mass flow rate, the less chance
+% of particles interacting with one another (van der waals forces) 
+
+%% Calculations
+% Electric field
+E_field = v_app * 1000 / plate_d;      % Electric field magnitude (V/m)
+q_acc = harper_eq(mat(:,1), ...        % Charge accumulated by grain (C/kg)
+    phi_s, mat(:,2), r_grain);
+V_particle = (4/3)*pi*r_grain^3;       % Average grain volume (m^3)
+m_particle = V_particle.*mat(:,2);     % Average grain masses (kg)
+F_e = q_acc .* m_particle.* E_field;   % Force acting on grain (N/m)
+e_accel = F_e ./ m_particle;           % Acceleration of grain (m/s^2)
+% Time
+E_time = sqrt(2*(plate_l)/g);          % Time in electric field (s)
+f_time = sqrt(2*(plate_l+fall_l)/g);   % Total fall time (s)
+n_sample = 10^5;                       % Number of points
+t_r = linspace(0, f_time, n_sample);   % Time range (s)
+% Kinematics
+final_vx = e_accel.*E_time;            % X velocity past field (m/s)
+y_pos = 1/2*g.*t_r.^2;                 % Y position of grain (m)
+t_half = round((E_time/f_time) ...     % Index to seperate time in field
+    *n_sample);                        % and beyond field
+x_field = 1/2.*e_accel.* ...           % Position inside field (m)
+    t_r(1, 1:t_half).^2;
+x_final = final_vx.* ...               % Position beyond field (m)
+    t_r(1, 1:(n_sample - t_half));
+% Loop to add initial position to x_final
+for i = 1:3
+    x_final(i,:) = x_final(i,:) + x_field(i,t_half);  
+end
+x_pos = cat(2, x_field, x_final);      % X position of grain (m)
+% Display distances between bins (cm)
+display_1 = 'Distance between Ilmenite and Pyroxene: %d cm';
+display_2 = 'Distance between Pyroxene and Olivine: %d cm';
+dis_1 = abs((x_pos(1,end) * 100) ...   % Distance between bins (cm)
+    - (x_pos(2,end) * 100));
+dis_2 = abs((x_pos(2,end) * 100) ...   % Distance between bins (cm)
+    - (x_pos(3,end) * 100));
+display_1f = sprintf(display_1, dis_1);
+display_2f = sprintf(display_2, dis_2);
+disp(display_1f)
+disp(display_2f)
+
+%% Plotting - single particle assumption
+
+for i = 1:3
+    plot(y_pos(1,:), x_pos(i,:), 'LineWidth', 2.5); 
+    hold on
+    errorbar(y_pos(1,n_sample), x_pos(i, n_sample), opening);
+    hold on
+end
+yline(-plate_d/2, 'LineWidth',3,'Color', [1 0 0]);
+yline(plate_d/2, 'LineWidth',3,'Color',[0 0 1]);
+camroll(270)
+hold off
+title('Trajectory of Minerals through Electrostatic Separator')
+legend('Ilmenite', 'Ilm. Range', 'Pyroxene', 'Pyr. Range', ...
+    'Olivine', 'Oliv. Range', 'Positive Plate', ...
+    'Negative Plate', 'Location','northwest');
+xlabel('Vertical distance (m)');
+ylabel('Horizontal distance (m)');
+
+
+
+%% Optimization Plotting - Goal of maximizing distance between particles
+v_app_t = linspace(10,30,n_sample);     % Voltage applied to plates (kV)
+plate_d_t = linspace(.01,0.1,n_sample); % Distance between plates (m)
+plate_l_t = linspace(.05,1,n_sample);   % Plate length (m)
+fall_l_t = linspace(.05,1,n_sample);    % Length from plate to bin (m)
+
+% Variable V
+E_field_t = v_app_t .* 1000 / plate_d;     % Electric field magnitude (V/m)
+F_e_t = q_acc .* m_particle.* E_field_t;   % Force acting on grain (N/m)
+e_accel_t = F_e_t ./ m_particle;           % Acceleration of grain (m/s^2)
+x_final_v = e_accel_t.*E_time.*f_time ...  % Position inside field (m)
+     + 1/2.*e_accel_t.*(E_time^2);              
+% Variable plate d
+E_field_t = v_app .* 1000 ./ plate_d_t;    % Electric field magnitude (V/m)
+F_e_t = q_acc .* m_particle.* E_field_t;   % Force acting on grain (N/m)
+e_accel_t = F_e_t ./ m_particle;           % Acceleration of grain (m/s^2)
+x_final_d = e_accel_t.*E_time.*f_time ...  % Position inside field (m)
+     + 1/2.*e_accel_t.*(E_time^2);        
+% Variable plate
+E_time_t = sqrt(2.*(plate_l_t)./g);          % Time in electric field (s)
+f_time_t = sqrt(2.*(plate_l_t+fall_l)./g);   % Total fall time (s)
+x_final_p = e_accel.*E_time_t.*f_time ...    % Position inside field (m)
+     + 1/2.*e_accel.*(E_time_t.^2);        
+% Variable fall
+f_time_t = sqrt(2.*(plate_l+fall_l_t)./g);   % Total fall time (s)
+x_final_f = e_accel.*E_time.*f_time_t ...    % Position inside field (m)
+     + 1/2.*e_accel.*(E_time.^2);       
+
+t = tiledlayout(2,2);
+nexttile
+plot(v_app_t, x_final_v, 'LineWidth', 2.5);
+title('Final distance between particles (variable voltage)')
+legend('Ilmenite', 'Pyroxene', 'Olivine');
+xlabel('Applied Voltage (kV)');
+ylabel('Location of particles (m)');
+nexttile
+plot(plate_d_t, x_final_d, 'LineWidth', 2.5);
+title('Final distance between particles (variable plate distance)')
+legend('Ilmenite', 'Pyroxene', 'Olivine');
+xlabel('Horizontal distance (m)');
+ylabel('Location of particles (m)');
+nexttile
+plot(plate_l_t, x_final_p, 'LineWidth', 2.5);
+title('Final distance between particles (variable plate length)')
+legend('Ilmenite', 'Pyroxene', 'Olivine');
+xlabel('Plate length (m)');
+ylabel('Location of particles (m)');
+nexttile
+plot(fall_l_t, x_final_f, 'LineWidth', 2.5);
+title('Final distance between particles (variable fall length)')
+legend('Ilmenite', 'Pyroxene', 'Olivine');
+xlabel('Vertical distance (m)');
+ylabel('Location of particles (m)');
+%/ Constant values:
+% v_app = 30;              % Voltage applied to plates (kV)
+% plate_d = .025;           % Distance between plates (m)
+% plate_l = 0.3;          % Plate length (m)
+% fall_l = 0.05;           % Length from plate to bin (m)
+% opening = 0.0001;        % Radius of opening to separator (m)
+
+%% Functions Section
+% Harper Equation Function
+function q_acc = harper_eq(phi_p, phi_s, rho_p, r_grain)
+    c = 2.66*10^(-13)*(8.85+1.151*log10(r_grain));
+    q_acc = c.*(phi_s - phi_p)./(rho_p*(r_grain^2));
+end
